@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>COD Dashboard from Google Sheets</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol"; }
+    .tabular-nums { font-variant-numeric: tabular-nums; }
+  </style>
+  <!-- React + ReactDOM + Babel for JSX in-browser -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-gray-50">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const SHEET_ID = "1Zt120MqIKg6ZJy-pBrXncEHqo-5bBTilJnBoiHSBpQY"; // เปลี่ยนเป็นไฟล์ของคุณได้
+    const SHEET_NAME = "DATA";
+    const GVIZ_URL = \`https://docs.google.com/spreadsheets/d/\${SHEET_ID}/gviz/tq?tqx=out:json&sheet=\${encodeURIComponent(SHEET_NAME)}\`;
+
+    function parseGviz(text) {
+      const json = JSON.parse(text.substring(text.indexOf("{"), text.lastIndexOf("}") + 1));
+      const rows = (json.table.rows || []).map((r) => r.c.map((c) => (c ? c.v : null)));
+      return rows;
+    }
+    function parseMaybeDate(v) {
+      if (v == null) return null;
+      if (v instanceof Date) return v;
+      if (typeof v === "string") {
+        const isoish = v.trim().replace(" ", "T");
+        const d = new Date(isoish);
+        if (!isNaN(d.getTime())) return d;
+        const m = v.match(/Date\\((\\d+),(\\d+),(\\d+)(?:,(\\d+),(\\d+),(\\d+))?\\)/);
+        if (m) {
+          const [_, Y, M, D, h = "0", mnt = "0", s = "0"] = m;
+          return new Date(Number(Y), Number(M), Number(D), Number(h), Number(mnt), Number(s));
+        }
+      }
+      return null;
+    }
+    function sameDay(a, b) {
+      if (!a || !b) return false;
+      return a.getFullYear()===b.getFullYear() && a.getMonth()===b.getMonth() && a.getDate()===b.getDate();
+    }
+    const numberFormat = (n) => (n==null || isNaN(n) ? "-" : new Intl.NumberFormat("th-TH").format(n));
+    const formatDateTime = (d) => {
+      if (!d) return "";
+      const pad = (n) => String(n).padStart(2, "0");
+      return \`\${d.getFullYear()}-\${pad(d.getMonth()+1)}-\${pad(d.getDate())} \${pad(d.getHours())}:\${pad(d.getMinutes())}\`;
+    };
+
+    function KPI({ title, value }) {
+      return (
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-4">
+          <div className="text-sm text-gray-500">{title}</div>
+          <div className="mt-1 text-2xl font-semibold tabular-nums">{value}</div>
+        </div>
+      );
+    }
+    const Th = ({children}) => <th className="px-4 py-3 text-xs font-semibold text-gray-600 uppercase tracking-wider">{children}</th>;
+    const Td = ({children, className=""}) => <td className={\`px-4 py-3 \${className}\`}>{children}</td>;
+
+    function App() {
+      const [rawRows, setRawRows] = React.useState([]);
+      const [error, setError] = React.useState("");
+      const [loading, setLoading] = React.useState(false);
+      const [selectedDateStr, setSelectedDateStr] = React.useState("");
+      const [pageFilter, setPageFilter] = React.useState("");
+      const [q, setQ] = React.useState("");
+
+      const fetchData = async () => {
+        setLoading(true);
+        setError("");
+        try {
+          const res = await fetch(GVIZ_URL, { cache: "no-store" });
+          if (!res.ok) throw new Error(\`HTTP \${res.status}\`);
+          const text = await res.text();
+          const rows = parseGviz(text);
+          const clean = rows.map((r) => ({
+            no: r[0],
+            page: r[1],
+            orderNo: r[2],
+            trackingNo: r[3],
+            price: r[4] != null ? Number(r[4]) : null,
+            recipient: r[5],
+            pickedAt: parseMaybeDate(r[6]),
+            deliveredAt: parseMaybeDate(r[7]),
+            cod: r[8] != null ? Number(r[8]) : null,
+            rawDelivered: r[7],
+          })).filter((row) => {
+            const looksLikeHeader = typeof row.no === "string" && /no\\.?/i.test(row.no);
+            return !looksLikeHeader && (row.page || row.orderNo || row.trackingNo);
+          });
+          clean.sort((a,b) => (b.deliveredAt?.getTime()||0) - (a.deliveredAt?.getTime()||0));
+          setRawRows(clean);
+        } catch (e) {
+          setError(\`ดึงข้อมูลไม่สำเร็จ: \${e?.message || e}.\\nโปรดตั้งค่าแชร์ชีทเป็น "Anyone with the link" หรือใช้ File → Share → Publish to web\`);
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      React.useEffect(() => { fetchData(); }, []);
+
+      const selectedDate = React.useMemo(() => {
+        if (!selectedDateStr) return null;
+        const d = new Date(\`\${selectedDateStr}T00:00:00\`);
+        return isNaN(d.getTime()) ? null : d;
+      }, [selectedDateStr]);
+
+      const pages = React.useMemo(() => Array.from(new Set(rawRows.map(r => r.page).filter(Boolean))).sort(), [rawRows]);
+
+      const filtered = React.useMemo(() => {
+        const qq = q.trim().toLowerCase();
+        return rawRows.filter((r) => {
+          const dateOk = selectedDate ? (r.deliveredAt && sameDay(r.deliveredAt, selectedDate)) : true;
+          const pageOk = pageFilter ? r.page === pageFilter : true;
+          const qOk = !qq ? true : [r.page, r.orderNo, r.trackingNo, r.recipient].filter(Boolean).some((s) => String(s).toLowerCase().includes(qq));
+          return dateOk && pageOk && qOk;
+        });
+      }, [rawRows, selectedDate, pageFilter, q]);
+
+      const kpi = React.useMemo(() => {
+        const count = filtered.length;
+        const receivedCount = filtered.filter((r) => (r.cod ?? 0) > 0).length;
+        const notInCount = filtered.filter((r) => (r.price ?? 0) > 0 && (r.cod ?? 0) === 0).length;
+        const totalPrice = filtered.reduce((s, r) => s + (r.price || 0), 0);
+        const totalCOD = filtered.reduce((s, r) => s + (r.cod || 0), 0);
+        const outstanding = filtered.reduce((s, r) => s + Math.max((r.price || 0) - (r.cod || 0), 0), 0);
+        return { count, receivedCount, notInCount, totalPrice, totalCOD, outstanding };
+      }, [filtered]);
+
+      return (
+        <div className="min-h-screen w-full bg-gray-50 text-gray-900 p-6">
+          <div className="max-w-7xl mx-auto space-y-6">
+            <div className="flex items-center justify-between">
+              <h1 className="text-2xl font-bold">สรุปเก็บเงินปลายทาง (COD) จาก Google Sheets</h1>
+              <div className="flex items-center gap-2">
+                <button onClick={fetchData} className="px-3 py-2 rounded-xl bg-gray-900 text-white text-sm hover:opacity-90">
+                  รีเฟรชข้อมูล
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+              <div className="flex flex-col">
+                <label className="text-sm text-gray-600 mb-1">วันที่ลูกค้าได้รับสินค้า</label>
+                <input type="date" value={selectedDateStr} onChange={(e)=>setSelectedDateStr(e.target.value)} className="rounded-xl border border-gray-300 px-3 py-2 bg-white" />
+              </div>
+              <div className="flex flex-col">
+                <label className="text-sm text-gray-600 mb-1">เพจ</label>
+                <select value={pageFilter} onChange={(e)=>setPageFilter(e.target.value)} className="rounded-xl border border-gray-300 px-3 py-2 bg-white">
+                  <option value="">ทั้งหมด</option>
+                  {pages.map((p)=>(<option key={p} value={p}>{p}</option>))}
+                </select>
+              </div>
+              <div className="md:col-span-2 flex flex-col">
+                <label className="text-sm text-gray-600 mb-1">ค้นหา (เพจ / Order / Tracking / ชื่อผู้รับ)</label>
+                <input type="text" value={q} onChange={(e)=>setQ(e.target.value)} placeholder="พิมพ์เพื่อค้นหา..." className="rounded-xl border border-gray-300 px-3 py-2 bg-white" />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <KPI title="จำนวนส่ง" value={numberFormat(kpi.count)} />
+                <KPI title="จำนวนที่ได้รับเงิน" value={numberFormat(kpi.receivedCount)} />
+                <KPI title="จำนวนที่ไม่เข้า" value={numberFormat(kpi.notInCount)} />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <KPI title="ยอดขายที่จัดส่ง" value={\`\${numberFormat(kpi.totalPrice)} ฿\`} />
+                <KPI title="เงินที่ได้รับจริง" value={\`\${numberFormat(kpi.totalCOD)} ฿\`} />
+                <KPI title="ยอดที่ไม่เข้า" value={\`\${numberFormat(kpi.outstanding)} ฿\`} />
+              </div>
+            </div>
+
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-100">
+                    <tr className="text-left">
+                      <Th>No.</Th>
+                      <Th>เพจ</Th>
+                      <Th>Order no.</Th>
+                      <Th>Tracking no.</Th>
+                      <Th>เงินที่ได้รับ</Th>
+                      <Th>วันที่ลูกค้าได้รับสินค้า</Th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {loading && (
+                      <tr><td colSpan={6} className="p-6 text-center text-gray-500">กำลังโหลดข้อมูล...</td></tr>
+                    )}
+                    {!loading && error && (
+                      <tr><td colSpan={6} className="p-6 text-center text-red-600 whitespace-pre-wrap">{error}</td></tr>
+                    )}
+                    {!loading && !error && filtered.length === 0 && (
+                      <tr><td colSpan={6} className="p-6 text-center text-gray-500">ไม่พบข้อมูลตามเงื่อนไขที่เลือก</td></tr>
+                    )}
+                    {!loading && !error && filtered.map((r, idx) => (
+                      <tr key={\`\${r.orderNo}-\${idx}\`} className="border-t border-gray-100 hover:bg-gray-50">
+                        <Td>{r.no ?? idx + 1}</Td>
+                        <Td>{r.page}</Td>
+                        <Td className="font-mono">{r.orderNo}</Td>
+                        <Td className="font-mono">{r.trackingNo}</Td>
+                        <Td className="text-right tabular-nums">{numberFormat(r.cod || 0)}</Td>
+                        <Td>{r.deliveredAt ? formatDateTime(r.deliveredAt) : (r.rawDelivered || "")}</Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <p className="text-xs text-gray-500">
+              * หมายเหตุ: ไฟล์นี้อ่านข้อมูลจากชีท "{SHEET_NAME}" ของไฟล์ Google Sheets: {SHEET_ID}.<br/>
+              กรุณาตั้งค่าแชร์เป็น Anyone with the link (Viewer) หรือ File → Share → Publish to web.
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+  </script>
+</body>
+</html>
